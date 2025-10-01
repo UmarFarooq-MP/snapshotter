@@ -1,51 +1,80 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"runtime"
+)
 
 var (
-	orderPool = NewOrderPool(1 << 16)  // 65,536 orders
-	retireQ   = newRetireRing(1 << 15) // 32,768 retired
+	// Bigger pools/rings for 200k+ TPS
+	orderPool = NewOrderPool(1 << 20)  // 1M orders
+	retireQ   = newRetireRing(1 << 18) // 256k retired
 	reader    Reader
 	book      = NewOrderBook()
 )
 
 func main() {
+	// Pin matcher to dedicated OS thread (avoid scheduler migration)
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	globalEpoch.Store(100)
 
-	// Insert 2 orders at price 100
-	o1 := book.placeOrder(100, 1, 10_000, 1, orderPool)
-	_ = book.placeOrder(100, 2, 20_000, 2, orderPool)
+	// --- Demo: Add initial orders --- //
+	fmt.Println("Placing initial bid/ask orders...")
+
+	// Place a bid @100
+	o1 := book.placeOrder(Bid, Limit, 100, 1, 10_000, 1, orderPool, retireQ)
+	// Place another bid @100
+	_ = book.placeOrder(Bid, Limit, 100, 2, 20_000, 2, orderPool, retireQ)
+	// Place an ask @101
+	_ = book.placeOrder(Ask, Limit, 101, 3, 15_000, 3, orderPool, retireQ)
 
 	fmt.Println("Init snapshot:")
 	book.SnapshotActiveIter(&reader, func(p int64, o *Order) {
-		fmt.Printf("  %d: O%d qty=%d\n", p, o.ID, o.Qty)
+		side := "BID"
+		if o.Side == Ask {
+			side = "ASK"
+		}
+		fmt.Printf("  %s %d: O%d qty=%d\n", side, p, o.ID, o.Qty)
 	})
 
-	// Cancel o1
-	book.cancelOrder(100, o1, retireQ)
+	// --- Cancel demo --- //
+	book.cancelOrder(o1.Price, o1, retireQ, o1.Side)
 
 	// Snapshot in parallel
 	done := make(chan struct{})
 	go func() {
+		runtime.LockOSThread() // pin snapshotter too
+		defer runtime.UnlockOSThread()
 		book.SnapshotActiveIter(&reader, func(p int64, o *Order) {
-			fmt.Printf("[snap] %d: O%d\n", p, o.ID)
+			side := "BID"
+			if o.Side == Ask {
+				side = "ASK"
+			}
+			fmt.Printf("[snap] %s %d: O%d\n", side, p, o.ID)
 		})
 		close(done)
 	}()
 
-	// Place O3
-	_ = book.placeOrder(100, 3, 5_000, 3, orderPool)
+	// Place IOC order (buy that should cancel leftover)
+	_ = book.placeOrder(Bid, IOC, 101, 4, 5_000, 4, orderPool, retireQ)
 
-	// First reclaim (reader active → O1 not recycled)
+	// First reclaim (reader active → canceled not yet recycled)
 	advanceEpochAndReclaim(retireQ, orderPool, &reader)
 
 	<-done
 
-	// Second reclaim (reader done → O1 recycled)
+	// Second reclaim (reader done → canceled recycled)
 	advanceEpochAndReclaim(retireQ, orderPool, &reader)
 
-	fmt.Println("Final snapshot (O2 & O3 only):")
+	// --- Final snapshot --- //
+	fmt.Println("Final snapshot:")
 	book.SnapshotActiveIter(&reader, func(p int64, o *Order) {
-		fmt.Printf("  %d: O%d qty=%d\n", p, o.ID, o.Qty)
+		side := "BID"
+		if o.Side == Ask {
+			side = "ASK"
+		}
+		fmt.Printf("  %s %d: O%d qty=%d\n", side, p, o.ID, o.Qty)
 	})
 }

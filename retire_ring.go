@@ -4,10 +4,14 @@ import "sync/atomic"
 
 // SPSC ring for retired orders (matcher→reclaimer).
 type retireRing struct {
+	// align head/tail to separate cache lines
+	head  uint64
+	_pad1 [56]byte
+	tail  uint64
+	_pad2 [56]byte
+
 	buf  []*Order
 	mask uint64
-	head uint64 // write (matcher)
-	tail uint64 // read (reclaimer)
 }
 
 func newRetireRing(pow2 uint64) *retireRing {

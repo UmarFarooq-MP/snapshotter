@@ -1,9 +1,10 @@
 package main
 
 type PriceLevel struct {
-	Price int64
-	head  *Order
-	tail  *Order
+	Price    int64
+	head     *Order
+	tail     *Order
+	TotalQty int64
 }
 
 func (lvl *PriceLevel) Enqueue(o *Order) {
@@ -14,6 +15,7 @@ func (lvl *PriceLevel) Enqueue(o *Order) {
 		lvl.head = o
 	}
 	lvl.tail = o
+	lvl.TotalQty += o.Qty
 }
 
 func (lvl *PriceLevel) unlinkAlreadyInactive(o *Order) {
@@ -27,5 +29,6 @@ func (lvl *PriceLevel) unlinkAlreadyInactive(o *Order) {
 	} else {
 		lvl.tail = o.prev
 	}
+	lvl.TotalQty -= o.Qty
 	o.next, o.prev = nil, nil
 }
